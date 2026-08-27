@@ -103,7 +103,7 @@ import matplotlib.pyplot as plt
 # ------------------------------------------------------------------------
 # CONFIG -- tweak these for your footage
 # ------------------------------------------------------------------------
-FPS = 30  # your badminton clip is 25fps -- keep this in sync with the source video
+FPS = 25  # your badminton clip is 25fps -- keep this in sync with the source video
 LANDMARKS_CSV = "data/pose_landmarks.csv"
 
 # Set to a video file path to auto-extract audio and fuse it in.
@@ -376,10 +376,39 @@ def match_to_audio(candidate_frame_numbers, audio_onset_frames, tolerance):
     return matches
 
 
+OUTPUT_CSV = "data/shot_features_v2.csv"
+
+
+def load_existing_labels(path):
+    """Re-running this script regenerates every candidate from scratch, which
+    would otherwise silently wipe out any 'shot_type' labels you've already
+    hand-entered in the output CSV. Load them first (keyed by exact frame
+    number) so main() can carry them forward onto the new output."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        old = pd.read_csv(path)
+    except Exception:
+        return {}
+    if "shot_type" not in old.columns:
+        return {}
+    labels = {}
+    for _, row in old.iterrows():
+        label = row["shot_type"]
+        if pd.notna(label) and str(label).strip():
+            labels[int(row["frame"])] = str(label).strip()
+    return labels
+
+
 # ------------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------------
 def main():
+    existing_labels = load_existing_labels(OUTPUT_CSV)
+    if existing_labels:
+        print(f"Preserving {len(existing_labels)} existing shot_type label(s) "
+              f"from a previous run (matched by exact frame number)")
+
     valid_frames, speed, accel, elbow_angles, reliable = load_pose_signals(LANDMARKS_CSV)
     candidates = find_swing_candidates(speed, reliable)
     print(f"Pose signal found {len(candidates)} still->burst candidates "
@@ -409,6 +438,7 @@ def main():
             "windup_frames": c["windup_frames"],
             "elbow_angle": round(float(elbow_angles[c["peak_idx"]]), 1),
             "source": source,
+            "shot_type": existing_labels.get(final_frame, ""),
         })
 
     # Any audio onsets with NO matching pose candidate nearby -- these are shots
@@ -427,10 +457,18 @@ def main():
                 "windup_frames": None,
                 "elbow_angle": None,
                 "source": "audio_only",
+                "shot_type": existing_labels.get(int(af), ""),
             })
 
     features_df = pd.DataFrame(rows).sort_values("frame").reset_index(drop=True)
-    features_df.to_csv("data/shot_features_v2.csv", index=False)
+
+    unmatched_labels = set(existing_labels) - set(features_df["frame"])
+    if unmatched_labels:
+        print(f"WARNING: {len(unmatched_labels)} existing label(s) had no matching "
+              f"frame in this run and were dropped (frames: {sorted(unmatched_labels)}) "
+              f"-- the detector likely found a different set of candidates this time.")
+
+    features_df.to_csv(OUTPUT_CSV, index=False)
 
     print("\nBreakdown by source (use this to decide what to trust):")
     print(features_df["source"].value_counts().to_string())
