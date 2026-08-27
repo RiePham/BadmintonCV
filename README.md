@@ -54,7 +54,7 @@ exports 33 landmarks per frame to `data/pose_landmarks.csv`.
 **v1 (`scripts/07_calculate_angles.py`):** looked for peaks in either elbow
 angle or raw wrist speed between consecutive frames.
 
-![Elbow Angle V1](outputs/elbow_angle_v1.png)
+![Elbow Angle V1](outputs/elbow_angle_analysis.png)
 
 Most "estimated contacts" cluster near ~175° elbow angle — i.e. the arm was
 nearly *straight*, which happens naturally at rest, not just during a
@@ -127,6 +127,22 @@ This isn't hidden or "fixed" with an artificially favorable split — it's
 reported as-is, because correctly diagnosing overfitting from the training
 curves is the actual point of this section, not the accuracy number.
 
+### 5. End-to-end demo (`scripts/10_run_on_video.py`)
+
+Chains everything above into one pipeline: given a raw video, it runs pose
+extraction, detects contact candidates, classifies each one with the
+trained MLP, and renders a new video with the predicted shot label
+overlaid at each detected moment.
+
+**Scope note:** this is offline batch processing (analyzes the full video,
+then renders output), not real-time / live camera inference — the contact
+detection logic needs to look both forward and backward in the wrist
+trajectory to find still→burst patterns, so it can't run as a live stream
+without being restructured for online-only signal processing. Also, since
+the classifier was trained on 33 samples from one clip, predictions on a
+different video should be read as a demo of the pipeline working
+end-to-end, not as validated accuracy.
+
 ---
 
 ## Known Limitations
@@ -179,9 +195,12 @@ BadmintonCV/
 ├── outputs/                # rendered videos, charts, trained model weights
 ├── scripts/
 │   ├── 01_split_dataset_by_class.py
+│   ├── 02_train_player.py
+│   ├── 02_train_shuttlecock.py
 │   ├── 03_track_and_overlay.py
 │   ├── 06_pose_extraction.py
 │   ├── 08_calculate_contacts_v2.py
-│   └── 09_train_shot_classifier.py
+│   ├── 09_train_shot_classifier.py
+│   └── 10_run_on_video.py   # end-to-end demo: video in -> annotated video out
 └── requirements.txt
 ```
