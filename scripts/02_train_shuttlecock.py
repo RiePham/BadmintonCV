@@ -1,38 +1,60 @@
 """
-Fine-tune a pretrained YOLOv8 model on the badminton player+shuttlecock dataset.
+================================================================================
+FILE 02b: train_shuttlecock.py
+================================================================================
 
-WHY THIS APPROACH (be ready to explain this in the interview):
-YOLOv8n comes pretrained on COCO (person, car, dog, etc. -- 80 general classes).
-It already knows how to detect "person"-like shapes well. Instead of training a
-detector from zero (which needs huge data + compute), we FINE-TUNE it: start from
-the COCO-pretrained weights and continue training on our small, domain-specific
-badminton dataset. The early layers (edges, textures, shapes) transfer almost for
-free; only the later layers really need to adapt to "shuttlecock" as a new concept.
-This is the standard, correct way to build a custom detector with a small dataset.
+HOW TO RUN THIS FILE:
+    python scripts/02_train_shuttlecock.py
 
-HOW TO RUN:
-    1. Download the Roboflow dataset (YOLOv8 format), unzip it into ./dataset/
-       so you have: dataset/data.yaml, dataset/train/, dataset/valid/, dataset/test/
-    2. pip install ultralytics
-    3. python scripts/02_train_detector.py
+WHAT THIS FILE DOES (super simple explanation):
+    Same idea as 02_train_player.py, but this one teaches a SEPARATE robot
+    to find the SHUTTLECOCK instead of players.
+
+    Why a separate robot instead of one robot that finds both?
+    The shuttlecock is TINY and moves SUPER fast -- much harder to spot than
+    a whole player. Giving it its own dedicated robot, with a bigger model
+    ("yolov8s" instead of "yolov8n") and bigger image size (1280 instead of
+    640), lets it focus 100% on this one hard problem instead of splitting
+    its attention with player-finding too.
+
+WHAT GOES IN, WHAT COMES OUT:
+    IN:  dataset_shuttlecock/data.yaml   <- made by 01_split_dataset_by_class.py
+    OUT: runs/shuttlecock_only/weights/best.pt   <- the trained shuttlecock-finding robot
+
+HOW THIS FILE CONNECTS TO OTHER FILES:
+    01_split_dataset_by_class.py
+              |
+              v
+    dataset_shuttlecock/data.yaml
+              |
+              v
+    02_train_shuttlecock.py   <-- YOU ARE HERE
+              |
+              v
+    runs/shuttlecock_only/weights/best.pt
+              |
+              v
+    03_track_and_overlay.py   (uses this trained robot to find the shuttlecock in video)
+================================================================================
 """
 
 from ultralytics import YOLO
 
-# yolov8n = "nano", the smallest/fastest variant -- right choice for CPU/limited time.
-# If training feels too slow, this is already the fastest option; reduce epochs instead.
-model = YOLO("yolov8s.pt")  # downloads pretrained COCO weights automatically, once
+# "yolov8s" = "small" -- one size bigger than the "nano" used for players.
+# The shuttlecock is a much harder, smaller target, so it gets a slightly
+# stronger (but still lightweight) robot brain.
+model = YOLO("yolov8s.pt")
 
 results = model.train(
-    data="dataset_shuttlecock/data.yaml",   # path to the Roboflow-generated config
-    epochs=50,                   # start here; watch the loss curve, stop early if it plateaus
-    imgsz=1280,
-    batch=8,                     # lower this (e.g. 4) if you run out of memory
+    data="dataset_shuttlecock/data.yaml",  # where the shuttlecock-only photos + labels are
+    epochs=50,
+    imgsz=1280,        # BIGGER image size than the player model -- helps spot a tiny fast object
+    batch=8,           # lower this (e.g. 4) if you run out of memory
     project="runs",
     name="shuttlecock_only",
-    patience=10,                 # stop early if validation stops improving for 10 epochs
+    patience=10,
 )
 
 print("\nTraining complete.")
-print(f"Best weights saved at: runs/badminton_finetune/weights/best.pt")
-print(f"Validation metrics (mAP, precision, recall) are in: runs/badminton_finetune/results.csv")
+print(f"Best weights saved at: runs/shuttlecock_only/weights/best.pt")
+print(f"Validation metrics (mAP, precision, recall) are in: runs/shuttlecock_only/results.csv")

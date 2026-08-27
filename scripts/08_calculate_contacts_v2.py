@@ -1,96 +1,66 @@
 """
-V2 - Estimate shot-CONTACT moments (not just "swings") from pose + (optional) audio.
+================================================================================
+FILE 08: calculate_contacts_v2.py  ("v2" -- the FIXED, better version of file 07)
+================================================================================
 
-WHY V1 (07_calculate_angles.py) WAS GIVING FALSE HITS
-Wrist speed alone is ambiguous for a few reasons that all showed up as your
-"detected hit before actual contact" problem:
+HOW TO RUN THIS FILE:
+    python scripts/08_calculate_contacts_v2.py
 
-  1. NOISY LANDMARKS DURING FAST MOTION. MediaPipe struggles most exactly when
-     the racket arm is moving fastest -- motion blur + the racket itself
-     occluding the wrist. A couple of frames where the wrist position is
-     briefly guessed wrong looks EXACTLY like a huge speed spike, even with
-     smoothing, because smoothing a rolling mean over noisy data still lets
-     single bad frames distort the result.
-  2. ONE GLOBAL THRESHOLD FOR THE WHOLE VIDEO. A smash and a soft net shot
-     have very different wrist speeds. A single `std() * 1.5` prominence
-     either misses soft shots or fires on noise during fast rallies.
-     NOTE: this version still uses percentile/std-based thresholds (see
-     SPEED_FLOOR_PERCENTILE, BURST_RATE_PERCENTILE below) -- that part of
-     the problem is narrowed (two independent signals must agree instead of
-     one), not eliminated. A truly adaptive per-shot-type threshold would
-     need shot-type labels or the shuttle-trajectory fusion described at
-     the bottom of this file. Don't oversell this as "fixed."
-  3. NO "WAS THE ARM ACTUALLY STILL FIRST?" CHECK. Your own read of the
-     footage -- players keep the racket fairly still while moving, and only
-     swing right before contact -- is exactly the right signal to use
-     directly, and V1 wasn't using it. A real swing is a short, sharp BURST
-     out of near-stillness, not just "the fastest point in some window."
+WHAT THIS FILE DOES (super simple explanation):
+    Same GOAL as file 07: guess when the player hit the shuttlecock, by
+    watching how fast their wrist moves. But file 07 got fooled a lot --
+    it thought a hit happened when really it was just noise (the camera
+    briefly losing track of the wrist) or a math mistake (treating several
+    skipped frames as if they were just ONE super-fast frame).
 
-WHAT THIS VERSION ADDS
-  A. Filter out low-confidence landmarks (MediaPipe's `visibility` score) so
-     occlusion/motion-blur guesses don't get treated as real movement.
-  B. Smooth the wrist TRAJECTORY itself (Savitzky-Golay), not the speed
-     signal after the fact -- this keeps peak timing much more accurate.
-  C. Require a genuine "still -> burst" pattern: for every candidate speed
-     peak, look backward for the nearest local stillness point, and only
-     keep the candidate if the rise from still->peak happened fast (few
-     frames) and hard (steep). Slow, gradual speed-ups (repositioning,
-     footwork) get rejected even if they eventually reach a locally-highest
-     speed value. The "stillness" reference itself is a short rolling
-     average (not a single raw frame), so one noisy low reading can't fake
-     a "still" point the way one noisy high reading fakes a swing peak --
-     the same anti-noise principle from (A)/(B), applied here too.
-  D. GAP-AWARE speed calculation (the fix that actually mattered most once
-     this was tested against real data -- see below). Filtering out
-     low-visibility frames in (A) means some frames get dropped entirely,
-     so the frames that survive are NOT evenly spaced 1-apart anymore.
-     Diffing wrist position across surviving samples while ignoring that
-     gap turns "19 real frames were dropped here" into "the wrist moved
-     this whole distance in 1 frame" -- a fake spike far bigger than any
-     real swing, and it happens most often exactly where you'd expect real
-     swings (visibility drops during motion blur, i.e. near real contacts).
-     Checked directly against data/pose_landmarks.csv: 12 of the 15 highest
-     "speed" frames produced by the naive diff were gap artifacts, not real
-     motion; the single highest "speed" moment in the whole clip was a
-     19-frame gap collapsed into one step. This version normalizes each
-     speed sample by the actual number of elapsed frames, and only trusts
-     a sample as a real instantaneous reading (usable as a peak, or as a
-     "stillness" reference point) when it spans an exact, unbroken
-     consecutive frame pair. In this dataset that's 917/939 samples
-     (97.7%) -- excluding the rest costs almost nothing and removes the
-     fake-spike risk entirely.
-  E. (Optional, biggest accuracy win) Fuse with AUDIO onset detection. The
-     "pok" of shuttle contact is short and acoustically distinct from
-     footsteps/crowd noise. Published racket-sport hit-detection work
-     (tennis / table tennis) reports 85-95%+ accuracy from audio onsets,
-     but that's from purpose-built classifiers (MFCC/spectral features +
-     a trained model), not raw generic onset detection. This script uses
-     librosa's generic `onset_detect` as a first pass -- treat its matches
-     as a useful extra signal, not a ground-truth oracle, especially with
-     crowd noise, umpire calls, or racket-on-racket sounds from the other
-     player. If a pose-based candidate has a matching audio onset nearby,
-     we snap the contact frame to the audio onset (more precise) and mark
-     it confirmed. If a candidate has NO nearby audio onset, it's flagged
-     as suspicious rather than silently kept or dropped -- you decide the
-     cutoff.
+    This file fixes those mistakes with 4 tricks:
+      A) Ignore frames where MediaPipe wasn't confident about the wrist spot
+      B) Smooth the wrist's PATH first, before measuring speed (not after)
+      C) Only count it as a swing if the arm was STILL first, then suddenly
+         burst into fast motion (a real swing looks like this; slow
+         repositioning does not)
+      D) Fix the "missing frames" math bug -- measure speed per REAL frame
+         gap, not just "this reading vs the very last reading saved"
+    It can ALSO (optionally) listen to the video's audio for the "pok"
+    sound of a real hit, and use that to double-check its guesses.
 
-WHAT THIS VERSION STILL DOESN'T DO (documented for later, not needed yet)
-  The highest-accuracy published approach (e.g. the TrackNet-shuttle +
-  YOLO-swing fusion paper, 89.7% accuracy / 91.3% recall vs 58.8% accuracy
-  from shuttle-trajectory alone) watches the SHUTTLE and flags a hit when
-  its flight direction reverses sharply near a player. That needs a
-  shuttle detector/tracker, which is a separate model you don't have yet
-  at this stage of the project. Once you build one, add a step here: for
-  each surviving candidate, check whether the shuttle is close to the
-  wrist AND reverses direction within ~3 frames. That's a strict superset
-  of what's below, not a replacement -- keep this script's logic either way.
+WHAT GOES IN, WHAT COMES OUT:
+    IN:  data/pose_landmarks.csv      <- made by 06_pose_extraction.py
+    OUT: outputs/contact_detection_v2.png  <- a chart
+    OUT: data/shot_features_v2.csv    <- list of guessed hit moments (v2, GOOD one)
 
-REQUIREMENTS
-  pip install librosa   (only needed if AUDIO_PATH / VIDEO_PATH is set)
-  ffmpeg must be installed and on PATH (only needed to auto-extract audio
-  from a video file)
+HOW THIS FILE CONNECTS TO OTHER FILES:
+    06_pose_extraction.py
+              |
+              v
+    data/pose_landmarks.csv
+              |
+              v
+    08_calculate_contacts_v2.py   <-- YOU ARE HERE (replaces file 07)
+              |
+              v
+    data/shot_features_v2.csv
+              |
+        (you manually watch the video and fill in the "shot_type" column
+         by hand -- e.g. "smash", "push", "not_shot")
+              |
+              v
+    09_train_shot_classifier.py   (teaches a small robot to guess shot_type
+                                   from the numbers in this spreadsheet)
+================================================================================
 
-Run: python scripts/08_calculate_contacts_v2.py
+**Why V1 was wrong:**
+- The camera sometimes "guessed wrong" where the hand was when it moved super fast (like blurry eyes)
+- If the camera missed a few frames and lumped them together, it looked like the hand moved super fast — but it didn't really
+- V1 never checked "was the hand still first?" — it just trusted anything fast
+
+**How V2 fixes it:**
+1. If the camera isn't sure, don't trust that frame
+2. Count the missed frames correctly, so it can't be fooled anymore
+3. Only count it as a real hit if the hand was still first, then burst fast
+4. (Extra, optional) Also listen for the "pok" sound of contact, to double-check
+
+**V2 still isn't perfect:** it still can't watch the shuttlecock's flight path — that's the most accurate way, but it needs a separate robot to track the shuttlecock, which isn't built yet.
 """
 
 import os
@@ -130,6 +100,12 @@ os.makedirs("data", exist_ok=True)
 # Pose loading helpers
 # ------------------------------------------------------------------------
 def get_point(frame_df, name, min_visibility=MIN_VISIBILITY):
+    """
+    SIMPLE EXPLANATION:
+    Find one specific joint's (x, y) spot in one frame's data. If MediaPipe
+    wasn't confident about it (visibility too low), pretend we don't have
+    it at all -- better to have NO data than WRONG data.
+    """
     row = frame_df[frame_df["landmark_name"] == name]
     if row.empty:
         return None
@@ -141,7 +117,11 @@ def get_point(frame_df, name, min_visibility=MIN_VISIBILITY):
 
 
 def calculate_angle(a, b, c):
-    """Angle at point b, formed by segments b->a and b->c."""
+    """
+    SIMPLE EXPLANATION:
+    Measures how bent or straight the elbow is, using the 3 points
+    shoulder(a), elbow(b), wrist(c). Straight arm = close to 180 degrees.
+    """
     ba = a - b
     bc = c - b
     cos_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
@@ -150,8 +130,12 @@ def calculate_angle(a, b, c):
 
 
 def smooth_track(positions):
-    """Savitzky-Golay smoothing of an (N, 2) trajectory. Falls back to raw
-    data if there aren't enough points for the configured window."""
+    """
+    SIMPLE EXPLANATION:
+    Takes a wobbly path of (x, y) points and makes it a smoother, cleaner
+    curve -- like tracing over a shaky hand-drawn line with a steadier
+    hand. This uses a common smoothing method (Savitzky-Golay).
+    """
     n = len(positions)
     if n < 2:
         return positions.copy()
@@ -168,11 +152,13 @@ def smooth_track(positions):
 
 
 def smooth_track_by_segment(positions, frame_gap):
-    """Savitzky-Golay assumes evenly-spaced samples. Once low-visibility
-    frames are dropped, the surviving samples are NOT evenly spaced across a
-    gap -- so smoothing straight through a gap silently blends real motion
-    with however many frames were skipped. Instead, split into contiguous
-    runs (frame_gap == 1 throughout) and smooth each run independently.
+    """
+    SIMPLE EXPLANATION:
+    Same smoothing as above, but done in careful little chunks. If some
+    frames were dropped in the middle (a "gap"), we DON'T smooth straight
+    across that gap -- that would blend real motion with the missing
+    frames and give a wrong answer. Instead we smooth each unbroken chunk
+    separately.
 
     `frame_gap[i]` = valid_frames[i] - valid_frames[i-1] (frame_gap[0] is
     unused / set to 1 by the caller)."""
@@ -187,6 +173,14 @@ def smooth_track_by_segment(positions, frame_gap):
 
 
 def load_pose_signals(csv_path):
+    """
+    SIMPLE EXPLANATION:
+    This is the main "reading" function. It goes through the whole
+    spreadsheet from file 06, grabs the shoulder/elbow/wrist for every
+    frame, smooths the paths, and calculates two things we care about for
+    every frame: (1) the elbow angle, and (2) how fast the wrist is moving
+    (speed), fixed so it correctly accounts for any dropped frames.
+    """
     df = pd.read_csv(csv_path)
     frames = sorted(df["frame"].unique())
 
@@ -256,6 +250,16 @@ def load_pose_signals(csv_path):
 # Core "still -> burst" candidate detection
 # ------------------------------------------------------------------------
 def find_swing_candidates(speed, reliable):
+    """
+    SIMPLE EXPLANATION:
+    Looks through the whole speed signal and finds "bumps" (peaks). But
+    unlike file 07, it doesn't stop there -- for EACH bump, it checks
+    backward in time: "was the wrist basically still right before this
+    bump, and did it speed up FAST and SHARPLY?" Only bumps that pass this
+    check are kept as real swing candidates. Slow, gradual speed-ups
+    (like just walking/repositioning) get thrown out even if they reach a
+    locally-high speed at some point.
+    """
     # Only genuinely consecutive-frame samples may act as a swing peak --
     # an averaged-across-a-gap sample is not a real instantaneous reading.
     speed_for_peaks = np.where(reliable, speed, 0.0)
@@ -310,6 +314,9 @@ def find_swing_candidates(speed, reliable):
     if not candidates:
         return []
 
+    # Compare all candidates against each other: keep a note of which ones
+    # had a REALLY sharp burst (top 60%) vs a weaker one (bottom 40%) --
+    # this becomes the "pose_sharp" vs "pose_weak" confidence label later.
     rates = np.array([c["burst_rate"] for c in candidates])
     rate_floor = np.percentile(rates, BURST_RATE_PERCENTILE)
     for c in candidates:
@@ -322,6 +329,8 @@ def find_swing_candidates(speed, reliable):
 # Optional audio fusion
 # ------------------------------------------------------------------------
 def extract_audio(video_path, out_wav="data/_extracted_audio.wav"):
+    """SIMPLE EXPLANATION: pulls just the sound track out of a video file
+    and saves it as a plain audio (.wav) file, using the ffmpeg tool."""
     subprocess.run(
         ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "22050", out_wav],
         check=True, capture_output=True,
@@ -330,6 +339,13 @@ def extract_audio(video_path, out_wav="data/_extracted_audio.wav"):
 
 
 def get_audio_onset_frames(video_path, fps):
+    """
+    SIMPLE EXPLANATION:
+    Listens to the video's audio track and finds moments where a SHARP,
+    SUDDEN sound happens (like the "pok" of a racket hitting the
+    shuttlecock). This is OPTIONAL extra evidence -- if a candidate swing
+    from the pose data lines up with a sharp sound, we trust it more.
+    """
     try:
         import librosa
     except ImportError:
@@ -362,9 +378,12 @@ def get_audio_onset_frames(video_path, fps):
 
 
 def match_to_audio(candidate_frame_numbers, audio_onset_frames, tolerance):
-    """For each pose candidate, find the nearest audio onset within tolerance.
-    Returns (matched_frame_or_None) per candidate, using the AUDIO frame when
-    matched since audio timing is more precise than 30fps video sampling."""
+    """
+    SIMPLE EXPLANATION:
+    For each pose-based candidate swing, check if there's a matching sharp
+    sound nearby in time. If yes, use the (more precise) audio timestamp
+    instead of the pose one.
+    """
     if audio_onset_frames is None or len(audio_onset_frames) == 0:
         return [None] * len(candidate_frame_numbers)
 
@@ -380,10 +399,15 @@ OUTPUT_CSV = "data/shot_features_v2.csv"
 
 
 def load_existing_labels(path):
-    """Re-running this script regenerates every candidate from scratch, which
-    would otherwise silently wipe out any 'shot_type' labels you've already
-    hand-entered in the output CSV. Load them first (keyed by exact frame
-    number) so main() can carry them forward onto the new output."""
+    """
+    SIMPLE EXPLANATION:
+    Every time you run this file again, it recalculates everything from
+    scratch -- which would normally ERASE any "shot_type" labels
+    (smash/push/not_shot) you already typed in by hand. This function
+    reads the OLD file first and remembers those labels (matched by exact
+    frame number), so we can put them back afterward instead of losing
+    your work.
+    """
     if not os.path.exists(path):
         return {}
     try:
@@ -404,6 +428,15 @@ def load_existing_labels(path):
 # Main
 # ------------------------------------------------------------------------
 def main():
+    """
+    SIMPLE EXPLANATION -- the overall recipe this file follows:
+        1. Remember any labels you already typed in by hand
+        2. Read the joint positions (file 06's CSV) and calculate speed/angle
+        3. Find candidate swings (still -> burst pattern)
+        4. (Optional) Check candidates against audio "pok" sounds
+        5. Save everything to a new spreadsheet, keeping your old labels
+        6. Draw a chart so you can visually check the results
+    """
     existing_labels = load_existing_labels(OUTPUT_CSV)
     if existing_labels:
         print(f"Preserving {len(existing_labels)} existing shot_type label(s) "
@@ -425,6 +458,10 @@ def main():
     rows = []
     for c, cf, audio_frame in zip(candidates, candidate_frame_numbers, matched_audio):
         final_frame = audio_frame if audio_frame is not None else int(cf)
+        # Every candidate gets a "source" label showing how much we trust it:
+        #   pose+audio  = pose AND sound agree (most trustworthy)
+        #   pose_sharp  = pose alone, but a strong clear burst
+        #   pose_weak   = pose alone, a weaker/less clear burst (double check by eye)
         if audio_frame is not None:
             source = "pose+audio"
         elif c["sharp_burst"]:
