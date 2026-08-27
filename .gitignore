@@ -4,7 +4,8 @@ data/*
 !data/.gitkeep
 outputs/*
 !outputs/.gitkeep
-
+!outputs/elbow_angle_analysis.png
+!outputs/contact_detection_v2.png
 __pycache__/
 *.pyc
 .DS_Store
