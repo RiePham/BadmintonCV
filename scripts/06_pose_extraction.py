@@ -40,6 +40,8 @@ HOW THIS FILE CONNECTS TO OTHER FILES:
               |
               v
     10_run_on_video.py  (runs the WHOLE chain automatically on a new video)
+    python scripts/06_pose_extraction.py videos/testvid2.mp4
+
 ================================================================================
 """
 
