@@ -57,7 +57,7 @@ def main(player_model_path, shuttle_model_path, video_path, output_video_path, o
         # calls, even though we're calling them frame-by-frame here rather
         # than handing over the whole video at once.
         player_result = player_model.track(frame, persist=True, verbose=False)[0]
-        shuttle_result = shuttle_model.track(frame, persist=True, verbose=False)[0]
+        shuttle_result = shuttle_result = shuttle_model.track(frame, persist=True, conf=0.7, verbose=False)[0]
 
         # --- Players: box + Near/Far role, same logic as before ---
         player_boxes = []
