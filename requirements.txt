@@ -4,4 +4,5 @@ numpy
 pandas
 matplotlib
 scipy
+mediapipe==0.10.30  # pinned: 1.0.1 crashes on macOS with "Service is unavailable" (GPU service) even in CPU delegate mode
 
